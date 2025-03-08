@@ -1,8 +1,9 @@
-import math, heapq
+import math
+import heapq
 
 # --- Network Data Setup ---
+# (link_data, adj, demand, alpha, beta remain unchanged from the original code)
 link_data = {
-    # link_id: (t0_minutes, capacity_veh_per_hr)
     1: (3.6, 4500), 2: (2.4, 8500), 3: (3.2, 11500), 4: (3.0, 15400),
     5: (2.4, 46300), 6: (2.4, 33700), 7: (2.4, 39500), 8: (2.4, 25300),
     9: (1.2, 27800), 10: (3.3, 8500), 11: (1.2, 46400), 12: (2.4, 13400),
@@ -12,7 +13,7 @@ link_data = {
     25: (1.8, 27300), 26: (1.8, 27300), 27: (3.0, 19500), 28: (3.6, 26500),
     29: (3.0, 9800), 30: (4.2, 9500), 31: (3.6, 9300), 32: (3.0, 19500),
     33: (3.6, 9400), 34: (2.4, 9300), 35: (2.4, 46300), 36: (3.6, 9300),
-    37: (1.8, 51300), 38: (2.4, 9700), 39: (2.4, 9300), 40: (2.4, 9800),
+    37: (1.8, 51300), 38: (1.8, 51300), 39: (2.4, 9700), 40: (2.4, 9300),
     41: (3.0, 9800), 42: (2.4, 9400), 43: (3.2, 26500), 44: (3.0, 9800),
     45: (2.4, 9100), 46: (2.4, 20100), 47: (3.0, 9600), 48: (3.0, 9800),
     49: (1.2, 10000), 50: (1.8, 38900), 51: (4.2, 9500), 52: (1.2, 10000),
@@ -63,17 +64,10 @@ demand = {
     24: {1:740, 2:550, 4:700, 5:630, 10:630, 11:910, 13:1590, 14:980, 15:1000, 19:640, 20:610, 21:1380, 22:920}
 }
 
-alpha, beta = 0.15, 4.0
+alpha = 0.15
+beta = 4.0
 
-# Travel Time Functions
-def travel_time_BPR(t0, cap, flow):
-    return t0 * (1 + alpha * (flow / cap) ** beta)
-
-def marginal_cost(t0, cap, flow):
-    return t0 * (1 + alpha * (flow/cap)**beta * (1 + beta))
-
-
-# All-or-nothing assignment based on marginal cost
+# --- Frank-Wolfe Algorithm ---
 def all_or_nothing_assign(travel_time):
     flows = {lid: 0 for lid in link_data}
     for origin, dests in demand.items():
@@ -83,7 +77,8 @@ def all_or_nothing_assign(travel_time):
         pq = [(0, origin)]
         while pq:
             d, u = heapq.heappop(pq)
-            if d > dist[u]: continue
+            if d > dist[u]:
+                continue
             for v, lid in adj[u]:
                 new_d = d + travel_time[lid]
                 if new_d < dist[v]:
@@ -91,7 +86,8 @@ def all_or_nothing_assign(travel_time):
                     prev[v] = (u, lid)
                     heapq.heappush(pq, (new_d, v))
         for dest, vol in dests.items():
-            if vol == 0: continue
+            if vol == 0:
+                continue
             node = dest
             while node != origin and prev[node] is not None:
                 u, lid = prev[node]
@@ -99,40 +95,82 @@ def all_or_nothing_assign(travel_time):
                 node = u
     return flows
 
-# # Initialize with free-flow travel times
-# travel_time = {lid: t0 for lid, (t0, _) in link_data.items()}
-# flows = all_or_nothing_assign(travel_time)
+# Line search helper function: computes dZ/dalpha
+def compute_dZ_dalpha(x, y, alpha_step, link_data):
+    sum_dZ = 0
+    for lid in link_data:
+        t0, cap = link_data[lid]
+        omega = x[lid] + alpha_step * (y[lid] - x[lid])
+        t_omega = t0 * (1 + alpha * (omega / cap)**beta)
+        sum_dZ += t_omega * (y[lid] - x[lid])
+    return sum_dZ
 
-# Solve System Optimum (SO) Assignment
-flows_SO = {lid: 0 for lid in link_data}
-for it in range(1, 1001):
-    current_tt = {lid: marginal_cost(t0, cap, flows_SO[lid]) for lid, (t0, cap) in link_data.items()}
-    new_flows = all_or_nothing_assign(current_tt)
-    theta = 1.0 / (it + 1)
-    for lid in flows_SO:
-        flows_SO[lid] = flows_SO[lid] + theta * (new_flows[lid] - flows_SO[lid])
+# Line search using bisection method
+def line_search(x, y, link_data, tol=1e-6):
+    alpha_low = 0
+    alpha_high = 1
+    dZ0 = compute_dZ_dalpha(x, y, 0, link_data)
+    if dZ0 >= 0:
+        return 0
+    dZ1 = compute_dZ_dalpha(x, y, 1, link_data)
+    if dZ1 <= 0:
+        return 1
+    while alpha_high - alpha_low > tol:
+        alpha_mid = (alpha_low + alpha_high) / 2
+        dZ_mid = compute_dZ_dalpha(x, y, alpha_mid, link_data)
+        if dZ_mid > 0:
+            alpha_high = alpha_mid
+        elif dZ_mid < 0:
+            alpha_low = alpha_mid
+        else:
+            return alpha_mid
+    return (alpha_low + alpha_high) / 2
 
-# Calculate marginal-cost pricing tolls (in time units)
-tolls = {}
-for lid, (t0, cap) in link_data.items():
-    tt_user_eq = travel_time_BPR(t0, cap, flows_SO[lid])
-    tt_marginal = marginal_cost(t0, cap, flows_SO[lid])
-    tolls[lid] = max(0, tt_marginal - tt_user_eq)
+# Initialization
+travel_time = {lid: t0 for lid, (t0, cap) in link_data.items()}
+flows = all_or_nothing_assign(travel_time)
+prev_flows = flows.copy()
 
-# Perform User Equilibrium (UE) Assignment with Tolls
-flows_UE_with_tolls = {lid: 0 for lid in link_data}
-for it in range(1, 1001):
-    tolled_tt = {lid: travel_time_BPR(t0, cap, flows_UE_with_tolls[lid]) + tolls[lid] for lid, (t0, cap) in link_data.items()}
-    new_flows = all_or_nothing_assign(tolled_tt)
-    theta = 1.0 / (it + 1)
-    for lid in flows_UE_with_tolls:
-        flows_UE_with_tolls[lid] = flows_UE_with_tolls[lid] + theta * (new_flows[lid] - flows_UE_with_tolls[lid])
+# Convergence parameters
+epsilon = 0.001
+max_iterations = 1000
 
-# Output results
-print("System Optimum Flows and Tolls:")
-for lid in link_data:
-    print(f"Link {lid}: SO flow={flows_SO[lid]:.1f}, Toll={tolls[lid]:.2f} min")
+# Iterative update
+for it in range(1, max_iterations + 1):
+    # Update travel times
+    for lid, (t0, cap) in link_data.items():
+        travel_time[lid] = t0 * (1 + alpha * (flows[lid] / cap)**beta)
+    # All-or-nothing assignment
+    new_flows = all_or_nothing_assign(travel_time)
+    # Line search for optimal alpha
+    alpha_opt = line_search(flows, new_flows, link_data)
+    # Update flows
+    for lid in flows:
+        flows[lid] = flows[lid] + alpha_opt * (new_flows[lid] - flows[lid])
+    # Convergence test
+    numerator = math.sqrt(sum((flows[lid] - prev_flows[lid])**2 for lid in flows))
+    denominator = sum(prev_flows[lid] for lid in prev_flows)
+    relative_gap = numerator / denominator if denominator > 0 else 0
+    if relative_gap < epsilon:
+        print(f"Converged after {it} iterations with relative gap {relative_gap:.6f}")
+        break
+    prev_flows = flows.copy()
+else:
+    print(f"Reached maximum iterations ({max_iterations}) with relative gap {relative_gap:.6f}")
 
-print("\nUser Equilibrium Flows with Tolls:")
-for lid in link_data:
-    print(f"Link {lid}: UE flow={flows_UE_with_tolls[lid]:.1f}")
+# Output equilibrium results
+print("\nEquilibrium Results:")
+for lid, x in flows.items():
+    t = travel_time[lid]
+    v_c = x / link_data[lid][1]
+    print(f"Link {lid}: volume={x:.1f} veh/hr, travel_time={t:.1f} min, v/c={v_c:.2f}")
+
+bottleneck_links = {lid: x / link_data[lid][1] for lid, x in flows.items() if x / link_data[lid][1] >= 0.89}
+print("\nBottleneck Links (v/c >= 0.90):")
+for lid, vc in bottleneck_links.items():
+    print(f"Link {lid}: v/c ratio = {vc:.2f}")
+
+# total travelling time
+total_tt = sum(flows[lid] * travel_time[lid] for lid in flows)
+
+print(f"\nTotal Travelling Time: {total_tt:.2f} min")

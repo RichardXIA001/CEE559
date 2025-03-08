@@ -1,0 +1,12 @@
+
+Solution for 3rd Exercise
+
+Optimal Toll Values:
+Link 2: 0.5 minutes
+Link 14: 1.5 minutes
+Link 66: 0.5 minutes
+Link 34: 1.0 minutes
+Link 40: 1.0 minutes
+Total System Travel Time with Optimal Tolls: 1253993.79 vehicle-minutes
+Total System Travel Time without Tolls: 1262792.44 vehicle-minutes
+Reduction in Total System Travel Time: 8798.65 vehicle-minutes
